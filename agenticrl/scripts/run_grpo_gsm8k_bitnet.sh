@@ -13,8 +13,8 @@ set -xeuo pipefail
 BITNET_ROOT=${BITNET_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 VERL_ROOT=${VERL_ROOT:-/workspace/verl}       # verl source checkout; ignored if verl is pip-installed
 MODEL_PATH=${MODEL_PATH:-${BITNET_ROOT}/models/bitnet-b1.58-2B-4T-bf16}
-RAW_DATA_DIR=${RAW_DATA_DIR:-${BITNET_ROOT}/data/gsm8k/main}
-DATA_DIR=${DATA_DIR:-${BITNET_ROOT}/data/gsm8k_verl}
+RAW_DATA_DIR=${RAW_DATA_DIR:-${BITNET_ROOT}/datasets/gsm8k/main}
+DATA_DIR=${DATA_DIR:-${BITNET_ROOT}/datasets/gsm8k_verl}
 PROJECT_NAME=${PROJECT_NAME:-agenticrl}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-grpo_gsm8k_bitnet2b}
 OUTPUT_DIR=${OUTPUT_DIR:-${BITNET_ROOT}/outputs}  # checkpoints + tensorboard; checkpoints are ~35 GB each
@@ -43,12 +43,13 @@ ROLLOUT_GPU_MEM_UTIL=${ROLLOUT_GPU_MEM_UTIL:-0.5}
 PPO_MAX_TOKEN_LEN_PER_GPU=${PPO_MAX_TOKEN_LEN_PER_GPU:-12288}
 LOG_PROB_MAX_TOKEN_LEN_PER_GPU=${LOG_PROB_MAX_TOKEN_LEN_PER_GPU:-16384}
 
-LOGGER=${LOGGER:-'["console","tensorboard"]'}
+LOGGER=${LOGGER:-'["console","tensorboard"]'}  # metrics go to TensorBoard only; wandb is never imported
 
 # agenticrl and verl must be importable in the driver, every Ray worker and every vLLM subprocess.
 export PYTHONPATH="${BITNET_ROOT}:${VERL_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export VERL_USE_EXTERNAL_MODULES=agenticrl.bitnet
 export TENSORBOARD_DIR=${TENSORBOARD_DIR:-${OUTPUT_DIR}/tensorboard/${PROJECT_NAME}/${EXPERIMENT_NAME}}
+echo "TensorBoard logs: ${TENSORBOARD_DIR}  (view: tensorboard --logdir ${OUTPUT_DIR}/tensorboard)"
 
 if [ ! -f "${DATA_DIR}/train.parquet" ] || [ ! -f "${DATA_DIR}/test.parquet" ]; then
     python3 -m agenticrl.data.gsm8k --input_dir "${RAW_DATA_DIR}" --output_dir "${DATA_DIR}"
@@ -79,6 +80,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name="${EXPERIMENT_NAME}" \
     trainer.default_local_dir="${CKPT_DIR}" \
     trainer.logger="${LOGGER}" \
+    ++ray_kwargs.ray_init.runtime_env.env_vars.TENSORBOARD_DIR="${TENSORBOARD_DIR}" \
     trainer.nnodes="${NNODES}" \
     trainer.n_gpus_per_node="${NGPUS_PER_NODE}" \
     trainer.total_epochs="${TOTAL_EPOCHS}" \

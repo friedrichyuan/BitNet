@@ -10,7 +10,7 @@ agenticrl/
 │   ├── hf_patch.py          #   transformers 侧修正：QAT 算子改 eager；去掉无效 auto_map
 │   ├── vllm_quant.py        #   vLLM 量化方法 "bitnet"：每个 Linear 的输入做 int8 per-token 量化
 │   └── vllm_model.py        #   vLLM 的 BitNetForCausalLM（加载权重时逐张量三值化）
-├── data/gsm8k.py            # data/gsm8k/main/*.parquet -> verl RL 数据格式
+├── data/gsm8k.py            # datasets/gsm8k/main/*.parquet -> verl RL 数据格式
 ├── rewards/gsm8k.py         # 规则奖励（#### 后的数字）+ 诊断指标 acc_flexible / has_marker
 ├── config/grpo_gsm8k_bitnet.yaml   # 叠加在 verl ppo_trainer.yaml 之上的训练配置
 ├── scripts/
@@ -34,7 +34,7 @@ python -m pytest agenticrl/tests -q
 ### 1. 训练前自检（1 张 GPU，约 5–10 分钟）—— 请先跑这个
 
 ```bash
-PYTHONPATH=$PWD python -m agenticrl.data.gsm8k --input_dir data/gsm8k/main --output_dir data/gsm8k_verl
+PYTHONPATH=$PWD python -m agenticrl.data.gsm8k --input_dir datasets/gsm8k/main --output_dir datasets/gsm8k_verl
 PYTHONPATH=$PWD python -m agenticrl.scripts.check_rollout_parity --out parity.json
 ```
 
@@ -55,8 +55,19 @@ bash agenticrl/scripts/run_grpo_gsm8k_bitnet.sh --cfg job
 # 也可以在末尾追加任意 hydra 覆盖，例如 trainer.total_epochs=3
 ```
 
-输出默认在 `outputs/`（checkpoint 每个约 35 GB，最多保留 2 个；tensorboard 在 `outputs/tensorboard/`）。
-用 wandb：`LOGGER='["console","wandb"]'`。多机：先 `ray start` 组好集群，再设 `NNODES`。
+输出默认在 `outputs/`：checkpoint 在 `outputs/checkpoints/`（每个约 35 GB，最多保留 2 个），
+TensorBoard 日志在 `outputs/tensorboard/<project>/<experiment>/`（可用 `TENSORBOARD_DIR` 改）。指标只写 TensorBoard 和控制台，不用 wandb。
+多机：先 `ray start` 组好集群，再设 `NNODES`。
+
+查看曲线（HPC 上开 TensorBoard，本地用 SSH 端口转发访问 http://localhost:6006）：
+
+```bash
+tensorboard --logdir outputs/tensorboard --port 6006 --bind_all
+ssh -L 6006:<计算节点>:6006 <登录节点>      # 在本地机器上执行
+```
+
+不同实验（如学习率扫描）用不同的 `EXPERIMENT_NAME`，会落在同一 `--logdir` 下的不同子目录，TensorBoard 里可以直接叠加对比。
+验证集样例回答（`log_val_generations: 10`）在 TensorBoard 的 TEXT 页。
 
 **建议的学习率扫描**（见下文"学习率"）：`ACTOR_LR=1e-6`（对照组，预期几乎不变）、`1e-5`、`3e-5`。
 
@@ -103,7 +114,7 @@ verl 常用的 `lr=1e-6` 下，Adam 每步每个权重只移动约 1e-6，145 �
 ## 请反馈给我
 
 1. `parity.json`（或第 1 步的完整输出）。
-2. 训练日志中的指标曲线（或 tensorboard 目录 / wandb 链接），至少包括上表各项，以及 step 0 的验证结果。
+2. 训练指标：TensorBoard 目录（`outputs/tensorboard/...`，体积很小，可直接打包发我）或截图，至少包括上表各项，以及 step 0 的验证结果。
 3. 报错时：完整 traceback 和启动命令（含环境变量覆盖）。
 4. 若有 checkpoint：`ternary_drift` 的输出。
 5. 机器信息：GPU 型号/数量、每步耗时（`timing_s/step`）。

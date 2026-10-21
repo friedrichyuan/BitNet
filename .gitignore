@@ -47,4 +47,4 @@ build/
 logs/
 
 # Datasets
-data/
+datasets/

@@ -7,7 +7,7 @@
 
 Usage (from the BitNet repo root, inside the verl container):
     PYTHONPATH=$PWD python -m agenticrl.scripts.check_rollout_parity \
-        --model models/bitnet-b1.58-2B-4T-bf16 --data data/gsm8k_verl/test.parquet
+        --model models/bitnet-b1.58-2B-4T-bf16 --data datasets/gsm8k_verl/test.parquet
 """
 
 import argparse
@@ -44,7 +44,7 @@ def hf_token_logprobs(model, prompt: list[int], response: list[int]) -> np.ndarr
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default=os.path.join(REPO_ROOT, "models", "bitnet-b1.58-2B-4T-bf16"))
-    parser.add_argument("--data", default=os.path.join(REPO_ROOT, "data", "gsm8k_verl", "test.parquet"))
+    parser.add_argument("--data", default=os.path.join(REPO_ROOT, "datasets", "gsm8k_verl", "test.parquet"))
     parser.add_argument("--num-prompts", type=int, default=64, help="prompts for the log-prob parity check")
     parser.add_argument("--num-eval", type=int, default=500, help="prompts for the greedy BOS / no-BOS accuracy check")
     parser.add_argument("--max-tokens", type=int, default=1024)

@@ -5,7 +5,7 @@ import pytest
 
 from agenticrl.data.gsm8k import DATA_SOURCE, INSTRUCTION, extract_solution, to_verl_rows
 
-RAW = os.path.join(os.path.dirname(__file__), "..", "..", "data", "gsm8k", "main")
+RAW = os.path.join(os.path.dirname(__file__), "..", "..", "datasets", "gsm8k", "main")
 
 
 def test_extract_solution():
