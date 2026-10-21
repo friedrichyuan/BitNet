@@ -104,6 +104,7 @@ PYTHONPATH=$PWD python -m agenticrl.tools.ternary_drift \
 3. **BOS**：BitNet 自带的 chat template 不输出 `<|begin_of_text|>`，而 verl 用 `add_special_tokens=False` 编码模板，所以默认 prompt 没有 BOS。配置里的 `custom_chat_template` = 原模板前加 `{{ bos_token }}`。
 4. **Checkpoint 崩溃修复**：模型 `config.json` 里的 `auto_map` 指向仓库里不存在的 remote code；verl 保存 checkpoint 时据此调用 `custom_object_save`，会在**第一次保存时报 FileNotFoundError**。`hf_patch` 在构建 `BitNetConfig` 时丢弃这个 `auto_map`（模型本身走 transformers 原生实现，不受影响）。
 5. **QAT 算子改 eager**：transformers 上游用 `@torch.compile` 包了量化算子，在 verl 的动态 batch + 梯度检查点下会频繁重编译；eager 版本与上游逐位一致（有测试）。设 `AGENTICRL_BITNET_HF_COMPILE=1` 可恢复上游行为。
+6. **镜像与 verl 版本差异**：`verlai/verl:vllm024.dev2` 对应 2026 年 7–9 月的 verl（vLLM 0.24 / torch 2.11 / TransferQueue 0.1.8），而当前 verl main 是按 vLLM 0.29 / torch 2.13 / TransferQueue 0.1.11 测试的（官方用 `uv run` 安装匹配依赖）。已知差异：TQ 0.1.8 不接受 `total_storage_size: null`，配置里固定为 100000（verl 当时的默认值）；TQ 0.1.8 没有 `save_checkpoint`，只影响异步训练模式，我们用的是同步模式。若再遇到版本相关报错，可选：`pip install --no-deps TransferQueue==0.1.11`，或把 verl 切到与镜像同期的提交 `2d98ec77`。
 
 ## 学习率（最重要的超参）
 

@@ -75,6 +75,14 @@ trainer:
   max_actor_ckpt_to_keep: 2
   total_epochs: 5
 
+transfer_queue:
+  backend:
+    SimpleStorage:
+      # verl main says null = unlimited, but the verlai/verl:vllm024.dev2 image ships TransferQueue
+      # 0.1.8 (verl now wants 0.1.11), which divides by this value and crashes on null. 100000 was
+      # verl's default when that image was current; one GRPO step holds ~2k samples.
+      total_storage_size: 100000
+
 ray_kwargs:
   ray_init:
     runtime_env:
