@@ -3,7 +3,8 @@
 Importing this package
 * swaps transformers' ``@torch.compile``'d BitNet QAT ops for eager ones and drops the dangling
   ``auto_map`` from ``BitNetConfig`` (see ``hf_patch``), and
-* registers the ``bitnet`` quantization method and ``BitNetForCausalLM`` with vLLM.
+* registers the ``bitnet`` quantization method and ``BitNetForCausalLM`` with vLLM, and
+* stops verl from looking for a trainer-side quantized weight exporter for BitNet (see ``verl_patch``).
 
 verl imports it through ``actor_rollout_ref.model.external_lib=agenticrl.bitnet`` and through
 ``VERL_USE_EXTERNAL_MODULES=agenticrl.bitnet``. The env var matters for the vLLM server actor and
@@ -11,6 +12,7 @@ its spawned worker processes, which never build an ``HFModelConfig`` themselves 
 """
 
 from .hf_patch import apply_hf_patch, drop_bitnet_auto_map
+from .verl_patch import apply_verl_patch
 
 VLLM_ARCH = "BitNetForCausalLM"
 
@@ -31,3 +33,4 @@ def register_vllm() -> bool:
 apply_hf_patch()
 drop_bitnet_auto_map()
 register_vllm()
+apply_verl_patch()
