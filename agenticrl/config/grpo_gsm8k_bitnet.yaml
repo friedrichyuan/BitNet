@@ -1,0 +1,85 @@
+# GRPO on GSM8K for BitNet b1.58 (bf16 latent weights), FSDP actor + vLLM rollout.
+# Layered on verl's ppo_trainer.yaml; scripts/run_grpo_gsm8k_bitnet.sh fills in paths and sweepable knobs.
+
+hydra:
+  searchpath:
+    - pkg://verl.trainer.config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: False
+
+data:
+  train_batch_size: 256
+  max_prompt_length: 512
+  max_response_length: 1024
+  filter_overlong_prompts: True
+  truncation: error
+
+actor_rollout_ref:
+  model:
+    # Registers BitNet with vLLM and makes transformers' QAT ops eager (agenticrl/bitnet).
+    external_lib: agenticrl.bitnet
+    # BitNet's own template plus a leading <|begin_of_text|>: verl tokenizes chat templates with
+    # add_special_tokens=False, and the stock template never emits BOS.
+    custom_chat_template: |-
+      {{ bos_token }}{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = message['role'] | capitalize + ': '+ message['content'] | trim + '<|eot_id|>' %}{{ content }}{% endfor %}{% if add_generation_prompt %}{{ 'Assistant: ' }}{% endif %}
+    use_remove_padding: True
+    enable_gradient_checkpointing: True
+
+  actor:
+    optim:
+      # BitNet latent weights have mean|w| ~1-3 and are cast to bf16 before ternarization, so
+      # verl's usual 1e-6 barely moves any ternary weight. See agenticrl/README.md.
+      lr: 1e-5
+    ppo_mini_batch_size: 64
+    use_dynamic_bsz: True
+    ppo_max_token_len_per_gpu: 12288
+    use_kl_loss: True
+    kl_loss_coef: 0.001
+    kl_loss_type: low_var_kl
+    entropy_coeff: 0
+    checkpoint:
+      # hf_model also writes <ckpt>/actor/huggingface/*.safetensors (bf16, ~4.8 GB): loadable by
+      # vLLM / transformers and by agenticrl/tools/ternary_drift.py without running the model merger.
+      save_contents: ["model", "optimizer", "extra", "hf_model"]
+      load_contents: ["model", "optimizer", "extra"]
+
+  rollout:
+    name: vllm
+    # The vLLM BitNet model supports TP=1 only; a 2B model fits one GPU anyway.
+    tensor_model_parallel_size: 1
+    n: 8
+    gpu_memory_utilization: 0.5
+    log_prob_use_dynamic_bsz: True
+    log_prob_max_token_len_per_gpu: 16384
+
+  ref:
+    log_prob_use_dynamic_bsz: True
+    log_prob_max_token_len_per_gpu: 16384
+    fsdp_config:
+      param_offload: True
+
+trainer:
+  project_name: agenticrl
+  experiment_name: grpo_gsm8k_bitnet2b
+  logger: ["console", "tensorboard"]
+  val_before_train: True
+  log_val_generations: 10
+  test_freq: 5
+  save_freq: 50
+  max_actor_ckpt_to_keep: 2
+  total_epochs: 5
+
+ray_kwargs:
+  ray_init:
+    runtime_env:
+      env_vars:
+        # vLLM's server actor and its spawned workers only import verl, never external_lib;
+        # verl/__init__.py imports these modules in every process.
+        VERL_USE_EXTERNAL_MODULES: agenticrl.bitnet
+        PYTHONPATH: ${oc.env:PYTHONPATH,""}

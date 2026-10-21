@@ -45,3 +45,6 @@ poetry.toml
 
 build/
 logs/
+
+# Datasets
+data/
