@@ -29,6 +29,9 @@ TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-256}       # prompts per step
 ROLLOUT_N=${ROLLOUT_N:-8}                       # responses per prompt (GRPO group size)
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-64}  # prompts per optimizer step
 ACTOR_LR=${ACTOR_LR:-1e-5}
+# Separate lr for the q/k/v/o/gate/up/down latent weights (ACTOR_LR then only applies to RMSNorm
+# weights + embeddings). Empty = one lr for everything. Switches the actor to FSDP2. See README.
+BITLINEAR_LR=${BITLINEAR_LR:-}
 USE_KL_LOSS=${USE_KL_LOSS:-True}
 KL_LOSS_COEF=${KL_LOSS_COEF:-0.001}
 ENTROPY_COEFF=${ENTROPY_COEFF:-0}
@@ -50,6 +53,14 @@ export PYTHONPATH="${BITNET_ROOT}:${VERL_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export VERL_USE_EXTERNAL_MODULES=agenticrl.bitnet
 export TENSORBOARD_DIR=${TENSORBOARD_DIR:-${OUTPUT_DIR}/tensorboard/${PROJECT_NAME}/${EXPERIMENT_NAME}}
 echo "TensorBoard logs: ${TENSORBOARD_DIR}  (view: tensorboard --logdir ${OUTPUT_DIR}/tensorboard)"
+
+BITLINEAR_ARGS=()
+if [ -n "${BITLINEAR_LR}" ]; then
+    BITLINEAR_ARGS=(
+        actor_rollout_ref.actor.strategy=fsdp2
+        "actor_rollout_ref.actor.optim.override_optimizer_config={bitlinear_lr:${BITLINEAR_LR}}"
+    )
+fi
 
 if [ ! -f "${DATA_DIR}/train.parquet" ] || [ ! -f "${DATA_DIR}/test.parquet" ]; then
     python3 -m agenticrl.data.gsm8k --input_dir "${RAW_DATA_DIR}" --output_dir "${DATA_DIR}"
@@ -86,4 +97,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.total_epochs="${TOTAL_EPOCHS}" \
     trainer.test_freq="${TEST_FREQ}" \
     trainer.save_freq="${SAVE_FREQ}" \
+    "${BITLINEAR_ARGS[@]}" \
     "$@"

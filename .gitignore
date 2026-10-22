@@ -35,9 +35,9 @@ nppBackup
 # Models
 models/*
 gpu/checkpoints/*
+outputs/
 
 # Python
-
 /.venv
 __pycache__/
 */poetry.lock

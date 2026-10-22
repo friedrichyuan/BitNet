@@ -10,7 +10,7 @@ agenticrl/
 │   ├── hf_patch.py          #   transformers 侧修正：QAT 算子改 eager；去掉无效 auto_map
 │   ├── vllm_quant.py        #   vLLM 量化方法 "bitnet"：每个 Linear 的输入做 int8 per-token 量化
 │   ├── vllm_model.py        #   vLLM 的 BitNetForCausalLM（加载权重时逐张量三值化）
-│   └── verl_patch.py        #   verl 侧修正：BitNet 不走训练端量化权重导出
+│   └── verl_patch.py        #   verl 侧修正：BitNet 不走训练端量化权重导出；BitLinear 权重单独学习率
 ├── data/gsm8k.py            # datasets/gsm8k/main/*.parquet -> verl RL 数据格式
 ├── rewards/gsm8k.py         # 规则奖励（#### 后的数字）+ 诊断指标 acc_flexible / has_marker
 ├── config/grpo_gsm8k_bitnet.yaml   # 叠加在 verl ppo_trainer.yaml 之上的训练配置
@@ -105,14 +105,31 @@ PYTHONPATH=$PWD python -m agenticrl.tools.ternary_drift \
 3. **BOS**：BitNet 自带的 chat template 不输出 `<|begin_of_text|>`，而 verl 用 `add_special_tokens=False` 编码模板，所以默认 prompt 没有 BOS。配置里的 `custom_chat_template` = 原模板前加 `{{ bos_token }}`。
 4. **Checkpoint 崩溃修复**：模型 `config.json` 里的 `auto_map` 指向仓库里不存在的 remote code；verl 保存 checkpoint 时据此调用 `custom_object_save`，会在**第一次保存时报 FileNotFoundError**。`hf_patch` 在构建 `BitNetConfig` 时丢弃这个 `auto_map`（模型本身走 transformers 原生实现，不受影响）。
 5. **QAT 算子改 eager**：transformers 上游用 `@torch.compile` 包了量化算子，在 verl 的动态 batch + 梯度检查点下会频繁重编译；eager 版本与上游逐位一致（有测试）。设 `AGENTICRL_BITNET_HF_COMPILE=1` 可恢复上游行为。
-6. **训练端不做量化导出**：verl 看到 HF config 里有 `quantization_config` 时，会让训练端在每次权重同步前先把权重量化好（只支持 compressed-tensors / FP8），遇到 `quant_method: bitnet` 会在 `init_model` 报 `NotImplementedError`。我们的设计是训练端直接发 bf16 原始权重、由 vLLM 端 `load_weights` 三值化，所以 `verl_patch` 对 bitnet 返回 None；显式设置了 `rollout.quantization` 或开启 verl QAT 时仍交给 verl 原逻辑。
+6. **训练端不做量化导出 / BitLinear 单独学习率**（`verl_patch`）：verl 看到 HF config 里有 `quantization_config` 时，会让训练端在每次权重同步前先把权重量化好（只支持 compressed-tensors / FP8），遇到 `quant_method: bitnet` 会在 `init_model` 报 `NotImplementedError`。我们的设计是训练端直接发 bf16 原始权重、由 vLLM 端 `load_weights` 三值化，所以 `verl_patch` 对 bitnet 返回 None；显式设置了 `rollout.quantization` 或开启 verl QAT 时仍交给 verl 原逻辑。
 7. **镜像与 verl 版本差异**：`verlai/verl:vllm024.dev2` 对应 2026 年 7–9 月的 verl（vLLM 0.24 / torch 2.11 / TransferQueue 0.1.8），而当前 verl main 是按 vLLM 0.29 / torch 2.13 / TransferQueue 0.1.11 测试的（官方用 `uv run` 安装匹配依赖）。已知差异：TQ 0.1.8 不接受 `total_storage_size: null`，配置里固定为 100000（verl 当时的默认值）；TQ 0.1.8 没有 `save_checkpoint`，只影响异步训练模式，我们用的是同步模式。若再遇到版本相关报错，可选：`pip install --no-deps TransferQueue==0.1.11`，或把 verl 切到与镜像同期的提交 `2d98ec77`。
 
 ## 学习率（最重要的超参）
 
-BitNet 的 latent 权重幅度很大（各层 mean|w| ≈ 1.2–2.8），而 FSDP 前向时先把 fp32 master 权重转成 bf16 再三值化。在三值阈值（0.5·mean|w|）附近，bf16 的步长约 0.004–0.008。
-verl 常用的 `lr=1e-6` 下，Adam 每步每个权重只移动约 1e-6，145 步累计约 1.5e-4，**几乎不会有三值权重翻转**，模型只能通过 embedding/RMSNorm 微小变化——训练可能"看起来在跑但什么都没学到"。
-因此默认 `lr=1e-5`，并建议做上面的扫描；`actor/kl_loss` 与 `ternary_drift` 的翻转比例可以直接验证权重是否真的在变。
+BitNet 的 latent 权重幅度很大（各层 mean|w| ≈ 1.2–2.8），而 FSDP 前向时先把 fp32 master 权重转成 bf16 再三值化。
+checkpoint 本身是 bf16，所以 master 权重一开始就正好落在 bf16 网格上；三值阈值（0.5·mean|w| ≈ 0.6–1.4）附近 bf16 的间距是 0.0039–0.0078，
+master 权重要累计移动超过半个间距（≥0.002）才会让前向看到的 bf16 值改变，进而可能翻转三值。
+AdamW 每次更新每个权重最多约移动 `lr`：默认配置每个训练步 4 次优化器更新（256/64），1 个 epoch（29 步）共 116 次。
+
+**实测（h20x2_lr1e-5，1 epoch）：20.8 亿个三值权重翻转数为 0**，累计最大移动约 116×1e-5≈1.2e-3，达不到 0.002。
+策略的全部变化（KL 0.02、学会格式、acc_flexible +7 pt）都来自 RMSNorm 权重（input_layernorm 相对变化约 2%）和极少量 embedding，
+相当于只调了约 50 万个 norm 参数。lr=1e-5 不足以训练三值权重，要让它们变化需要更大的学习率（约 1e-4 量级）或其他办法。
+`actor/kl_loss` 只能说明策略在变，三值权重有没有变必须用 `ternary_drift` 检查。
+
+**分开设学习率**：设置 `BITLINEAR_LR` 后，q/k/v/o/gate/up/down 的 latent 权重用 `BITLINEAR_LR`，RMSNorm 和 embedding 仍用 `ACTOR_LR`：
+
+```bash
+BITLINEAR_LR=1e-4 ACTOR_LR=1e-5 EXPERIMENT_NAME=h20x2_bit1e-4 NGPUS_PER_NODE=2 TOTAL_EPOCHS=1 \
+    bash agenticrl/scripts/run_grpo_gsm8k_bitnet.sh
+```
+
+- 会自动把 actor 切到 FSDP2（`actor.strategy=fsdp2`），因为分组需要逐参数的张量；FSDP1 默认把整层参数拼成一个 flat param。
+- 等价的 hydra 写法：`actor_rollout_ref.actor.strategy=fsdp2 'actor_rollout_ref.actor.optim.override_optimizer_config={bitlinear_lr:1e-4}'`。
+- 启动日志里会打印 `[agenticrl.bitnet] optimizer param groups: ...`，可据此确认生效；TensorBoard 的 `actor/lr` 显示的是 `ACTOR_LR`（第 0 组）。
 
 ## 请反馈给我
 
